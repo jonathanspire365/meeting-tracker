@@ -204,3 +204,4 @@ export const FileUploaderModal: React.FC<FileUploaderModalProps> = ({
     </div>
   );
 };
+export default App;
