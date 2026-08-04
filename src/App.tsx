@@ -1,207 +1,289 @@
-import React, { useState } from 'react';
-import { Task } from '../types.js';
-import { extractMeetingTasks } from '../lib/gemini.js';
+import React, { useState, useEffect } from 'react';
+import { Task, TaskStatus, ViewMode, TaskFilterState } from './types.js';
+import { SAMPLE_TASKS } from './data/sampleMeetings.js';
+import { Header } from './components/Header.js';
+import { TaskStats } from './components/TaskStats.js';
+import { TaskBoard } from './components/TaskBoard.js';
+import { TaskTable } from './components/TaskTable.js';
+import { TaskModal } from './components/TaskModal.js';
+import { FileUploaderModal } from './components/FileUploaderModal.js';
+import { BiddingAnalyzerModal } from './components/BiddingAnalyzerModal.js';
+import { exportTasksToExcel } from '../lib/excelExport.js';
 
-interface FileUploaderModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onImportTasks: (tasks: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>[]) => void;
-}
+const LOCAL_STORAGE_KEY = 'meeting_supervision_tasks';
 
-export const FileUploaderModal: React.FC<FileUploaderModalProps> = ({
-  isOpen,
-  onClose,
-  onImportTasks,
-}) => {
-  const [textInput, setTextInput] = useState('');
-  const [contextInput, setContextInput] = useState('');
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-
-  if (!isOpen) return null;
-
-  // 处理文件选择
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setSelectedFile(e.target.files[0]);
-    }
-  };
-
-  // 将文件转为 Base64 字符串
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        const result = reader.result as string;
-        // 去掉 base64 前缀 (e.g. "data:application/pdf;base64,")
-        const base64Data = result.split(',')[1] || '';
-        resolve(base64Data);
-      };
-      reader.onerror = (error) => reject(error);
-    });
-  };
-
-  // 核心 AI 分析提取函数
-  const handleStartExtraction = async () => {
-    if (!textInput.trim() && !selectedFile) {
-      setErrorMessage('请至少输入会议纪要文本或上传相关文件/文档。');
-      return;
-    }
-
-    setLoading(true);
-    setErrorMessage('');
-
+export function App() {
+  const [tasks, setTasks] = useState<Task[]>(() => {
     try {
-      let filePayload: { name: string; mimeType: string; base64Data: string } | undefined = undefined;
-
-      if (selectedFile) {
-        const base64Data = await fileToBase64(selectedFile);
-        filePayload = {
-          name: selectedFile.name,
-          mimeType: selectedFile.type || 'application/pdf',
-          base64Data,
-        };
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
       }
+    } catch (e) {
+      console.error('Failed to load tasks from localStorage:', e);
+    }
+    return SAMPLE_TASKS;
+  });
 
-      // 直接调用客户端 Gemini 解析函数
-      const result = await extractMeetingTasks({
-        text: textInput,
-        meetingContext: contextInput,
-        file: filePayload,
-      });
+  const [activeTab, setActiveTab] = useState<'meeting-tracker' | 'bidding-analyzer'>('meeting-tracker');
+  const [viewMode, setViewMode] = useState<ViewMode>('board');
 
-      if (result.success && result.tasks) {
-        // 将提取到的任务列表导入父组件状态
-        onImportTasks(result.tasks);
-        // 清空重置并关闭弹窗
-        setTextInput('');
-        setContextInput('');
-        setSelectedFile(null);
-        onClose();
-      } else {
-        setErrorMessage(result.error || '解析失败，请检查 API Key 配置或稍后重试。');
-      }
-    } catch (err: any) {
-      console.error('AI Extraction Error:', err);
-      setErrorMessage(err.message || '发生未知错误，请重试。');
-    } finally {
-      setLoading(false);
+  const [filters, setFilters] = useState<TaskFilterState>({
+    searchQuery: '',
+    statusFilter: 'All',
+    ownerFilter: '',
+    overdueOnly: false,
+    priorityFilter: 'All',
+  });
+
+  // Modal states
+  const [isExtractModalOpen, setIsExtractModalOpen] = useState(false);
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+
+  // Sync to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(tasks));
+    } catch (e) {
+      console.error('Failed to save tasks to localStorage:', e);
+    }
+  }, [tasks]);
+
+  // Status Change Handler
+  const handleUpdateStatus = (taskId: string, newStatus: TaskStatus) => {
+    setTasks((prev) =>
+      prev.map((t) => {
+        if (t.id === taskId) {
+          return {
+            ...t,
+            status: newStatus,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return t;
+      })
+    );
+  };
+
+  // Save Task (Create or Update)
+  const handleSaveTask = (
+    taskData: Omit<Task, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
+  ) => {
+    const now = new Date().toISOString();
+
+    if (taskData.id) {
+      // Update existing
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskData.id
+            ? {
+                ...t,
+                ...taskData,
+                updatedAt: now,
+              }
+            : t
+        )
+      );
+    } else {
+      // Create new
+      const newTask: Task = {
+        ...taskData,
+        id: `task-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        createdAt: now,
+        updatedAt: now,
+      };
+      setTasks((prev) => [newTask, ...prev]);
     }
   };
+
+  // Delete Task
+  const handleDeleteTask = (taskId: string) => {
+    if (window.confirm('确认删除此项督办任务？')) {
+      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    }
+  };
+
+  // Batch Delete
+  const handleBatchDelete = (taskIds: string[]) => {
+    if (window.confirm(`确认删除已选中的 ${taskIds.length} 项督办任务？`)) {
+      setTasks((prev) => prev.filter((t) => !taskIds.includes(t.id)));
+    }
+  };
+
+  // Batch Status Change
+  const handleBatchStatusChange = (taskIds: string[], status: TaskStatus) => {
+    const now = new Date().toISOString();
+    setTasks((prev) =>
+      prev.map((t) =>
+        taskIds.includes(t.id)
+          ? {
+              ...t,
+              status,
+              updatedAt: now,
+            }
+          : t
+      )
+    );
+  };
+
+  // Import AI Extracted Tasks
+  const handleImportExtractedTasks = (
+    newTasksData: Omit<Task, 'id' | 'createdAt' | 'updatedAt'>[]
+  ) => {
+    const now = new Date().toISOString();
+    const createdTasks: Task[] = newTasksData.map((t, index) => ({
+      ...t,
+      id: `task-ai-${Date.now()}-${index}`,
+      createdAt: now,
+      updatedAt: now,
+    }));
+
+    setTasks((prev) => [...createdTasks, ...prev]);
+  };
+
+  // Export Filtered Tasks to Excel
+  const handleExportExcel = () => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const filtered = tasks.filter((task) => {
+      if (filters.searchQuery.trim()) {
+        const query = filters.searchQuery.toLowerCase();
+        const matchTitle = task.title.toLowerCase().includes(query);
+        const matchOwner = task.owner.toLowerCase().includes(query);
+        const matchDeliverable = task.deliverable.toLowerCase().includes(query);
+        const matchBlocked = (task.blockedReason || '').toLowerCase().includes(query);
+        if (!matchTitle && !matchOwner && !matchDeliverable && !matchBlocked) {
+          return false;
+        }
+      }
+
+      if (filters.statusFilter !== 'All' && task.status !== filters.statusFilter) {
+        return false;
+      }
+
+      if (filters.ownerFilter && task.owner !== filters.ownerFilter) {
+        return false;
+      }
+
+      if (filters.priorityFilter !== 'All' && task.priority !== filters.priorityFilter) {
+        return false;
+      }
+
+      if (filters.overdueOnly) {
+        const isOverdue = task.status !== 'Done' && task.deadline < todayStr;
+        if (!isOverdue) return false;
+      }
+
+      return true;
+    });
+
+    exportTasksToExcel(filtered, '会议遗留事项督办清单');
+  };
+
+  // Reset to Sample Data
+  const handleResetSampleData = () => {
+    if (window.confirm('重新加载示例会议数据将重置当前看板数据，确定继续吗？')) {
+      setTasks(SAMPLE_TASKS);
+      setFilters({
+        searchQuery: '',
+        statusFilter: 'All',
+        ownerFilter: '',
+        overdueOnly: false,
+        priorityFilter: 'All',
+      });
+    }
+  };
+
+  const blockedCount = tasks.filter((t) => t.status === 'Blocked').length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full p-6 text-slate-800 transition-all border border-slate-100">
-        {/* Header */}
-        <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-5">
-          <div className="flex items-center space-x-2">
-            <span className="p-2 bg-indigo-50 text-indigo-600 rounded-lg font-bold text-lg">✨</span>
-            <h3 className="text-xl font-bold text-slate-800">AI 智能提取会议督办事项</h3>
-          </div>
-          <button
-            onClick={onClose}
-            disabled={loading}
-            className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-md text-xl"
-          >
-            ✕
-          </button>
-        </div>
+    <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans antialiased pb-16">
+      {/* Top Header & Navigation Bar */}
+      <Header
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        viewMode={viewMode}
+        setViewMode={setViewMode}
+        onOpenExtractModal={() => setIsExtractModalOpen(true)}
+        onOpenCreateModal={() => {
+          setEditingTask(null);
+          setIsTaskModalOpen(true);
+        }}
+        onExportExcel={handleExportExcel}
+        onResetSampleData={handleResetSampleData}
+        taskCount={tasks.length}
+        blockedCount={blockedCount}
+      />
 
-        {/* 错误信息展示 */}
-        {errorMessage && (
-          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-600 text-sm rounded-lg flex items-center space-x-2">
-            <span>⚠️</span>
-            <span>{errorMessage}</span>
-          </div>
-        )}
-
-        <div className="space-y-4">
-          {/* 上下文/背景补充 */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
-              会议背景 / 上下文补充 (选填)
-            </label>
-            <input
-              type="text"
-              placeholder="如：2026年Q3部门例会 / 供应商对接会"
-              value={contextInput}
-              onChange={(e) => setContextInput(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+        {activeTab === 'meeting-tracker' ? (
+          <>
+            {/* KPI Statistics Dashboard */}
+            <TaskStats
+              tasks={tasks}
+              filters={filters}
+              setFilters={setFilters}
             />
-          </div>
 
-          {/* 会议纪要文本录入 */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
-              粘贴会议纪要文本
-            </label>
-            <textarea
-              rows={5}
-              placeholder="直接在此粘贴会议记录、纪要全文或发言要点..."
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              disabled={loading}
-              className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 resize-none"
-            />
-          </div>
-
-          {/* 附件/文档上传 */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">
-              或上传纪要文档 (PDF / Word / TXT / 图片)
-            </label>
-            <div className="flex items-center space-x-3">
-              <input
-                type="file"
-                accept=".pdf,.txt,.doc,.docx,image/*"
-                onChange={handleFileChange}
-                disabled={loading}
-                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"
+            {/* View Mode: Kanban Board or List Table */}
+            {viewMode === 'board' ? (
+              <TaskBoard
+                tasks={tasks}
+                filters={filters}
+                setFilters={setFilters}
+                onUpdateStatus={handleUpdateStatus}
+                onEditTask={(task) => {
+                  setEditingTask(task);
+                  setIsTaskModalOpen(true);
+                }}
+                onDeleteTask={handleDeleteTask}
               />
-              {selectedFile && (
-                <button
-                  onClick={() => setSelectedFile(null)}
-                  className="text-xs text-rose-500 hover:underline shrink-0"
-                >
-                  移除文件
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer 按钮区 */}
-        <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
-          <button
-            onClick={onClose}
-            disabled={loading}
-            className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={handleStartExtraction}
-            disabled={loading}
-            className="px-5 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 rounded-lg shadow-sm transition-all flex items-center space-x-2"
-          >
-            {loading ? (
-              <>
-                <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <span>智能分析提取中...</span>
-              </>
             ) : (
-              <span>开始 AI 智能提取</span>
+              <TaskTable
+                tasks={tasks}
+                filters={filters}
+                setFilters={setFilters}
+                onUpdateStatus={handleUpdateStatus}
+                onEditTask={(task) => {
+                  setEditingTask(task);
+                  setIsTaskModalOpen(true);
+                }}
+                onDeleteTask={handleDeleteTask}
+                onBatchDelete={handleBatchDelete}
+                onBatchStatusChange={handleBatchStatusChange}
+              />
             )}
-          </button>
-        </div>
-      </div>
+          </>
+        ) : (
+          /* Tab 2: Bidding Analyzer Reserved Feature Module */
+          <BiddingAnalyzerModal />
+        )}
+      </main>
+
+      {/* Manual Task Modal (Create & Edit) */}
+      <TaskModal
+        isOpen={isTaskModalOpen}
+        onClose={() => {
+          setIsTaskModalOpen(false);
+          setEditingTask(null);
+        }}
+        onSave={handleSaveTask}
+        initialTask={editingTask}
+      />
+
+      {/* AI File & Text Extraction Modal */}
+      <FileUploaderModal
+        isOpen={isExtractModalOpen}
+        onClose={() => setIsExtractModalOpen(false)}
+        onImportTasks={handleImportExtractedTasks}
+      />
     </div>
   );
-};
+}
+
+// 关键缺失代码：默认导出 App 组件
 export default App;
