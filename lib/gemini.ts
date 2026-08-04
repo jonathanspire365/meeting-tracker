@@ -1,19 +1,17 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ExtractionResponse } from "../src/types.js";
 
-// Initialize Gemini Client on Server
+// Initialize Gemini Client
 export function getGeminiClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  // 适配 Vite 前端环境变量读取
+  const apiKey = (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) || process.env.GEMINI_API_KEY;
+  
   if (!apiKey) {
-    console.warn("GEMINI_API_KEY is not defined in environment variables.");
+    console.warn("GEMINI_API_KEY / VITE_GEMINI_API_KEY is not defined in environment variables.");
   }
+  
   return new GoogleGenAI({
-    apiKey: apiKey || "",
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
+    apiKey: apiKey || ""
   });
 }
 
@@ -29,12 +27,12 @@ export async function extractMeetingTasks(options: {
   };
   meetingContext?: string;
 }): Promise<ExtractionResponse> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return {
       success: false,
       tasks: [],
-      error: "未配置 GEMINI_API_KEY。请在 Settings > Secrets 中注入 GEMINI_API_KEY 环境变量。"
+      error: "未配置 API Key。请在 Vercel 设置中添加 VITE_GEMINI_API_KEY 环境变量。"
     };
   }
 
@@ -81,7 +79,7 @@ export async function extractMeetingTasks(options: {
     const currentDateStr = new Date().toISOString().split('T')[0];
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+      model: "gemini-2.5-flash",
       contents: { parts },
       config: {
         systemInstruction: `你是一个资深企业督办管理专家。请深入解析提供的会议纪要或文档，提取出所有明确的遗留事项、跟进任务、决策跟进项。
