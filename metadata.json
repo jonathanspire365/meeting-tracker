@@ -1,0 +1,6 @@
+{
+  "name": "会议遗留事项智能督办与跟踪看板",
+  "description": "基于 Gemini AI 的会议纪要智能解析、任务提取、卡点智能督办与 Kanban/List 跟踪看板系统",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
