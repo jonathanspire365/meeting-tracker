@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Task } from '../types.js';
-import { extractMeetingTasks } from '../../lib/gemini.js';
+import { extractMeetingTasks } from '../lib/gemini.js';
 
 interface FileUploaderModalProps {
   isOpen: boolean;
